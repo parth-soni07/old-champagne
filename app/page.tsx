@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   Area, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
@@ -16,10 +16,12 @@ type Accuracy = {
   histogram: { from: number; to: number; count: number }[];
 };
 type Point = { startTime: string; actual: number; forecast: number | null; publishTime: string | null };
+type Day = { date: string; metrics: Metrics | null; points: Point[] };
 
 // Mirrors the CSS tokens; SVG presentation attributes need literal colours.
 const C = { blue: "#007aff", orange: "#ff9500", green: "#34c759", indigo: "#5856d6", grid: "rgba(0,0,0,0.06)", axis: "#5e5e63" };
 const CUTOFFS = ["07:00", "09:00", "10:00", "11:00"];
+const SEV = [2000, 3000]; // daily typical-miss thresholds (MW) for warmer calendar tiles
 const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const JAN1_OFFSET = (new Date(Date.UTC(2026, 0, 1)).getUTCDay() + 6) % 7; // Monday-first grid
 
@@ -42,15 +44,6 @@ function useApi<T>(url: string) {
   }, [url]);
   // Previous data stays on screen (dimmed via `stale`) while the next request is in flight or failed.
   return { data: state.data, error: state.url === url ? state.error : undefined, stale: state.dataUrl !== url };
-}
-
-const motionQuery = "(prefers-reduced-motion: reduce)";
-function useReducedMotion() {
-  return useSyncExternalStore(
-    (cb) => { const m = matchMedia(motionQuery); m.addEventListener("change", cb); return () => m.removeEventListener("change", cb); },
-    () => matchMedia(motionQuery).matches,
-    () => true,
-  );
 }
 
 type TipItem = { name?: unknown; value?: unknown; color?: string };
@@ -121,20 +114,39 @@ const gwAxis = { ...axisProps, tickFormatter: (v: number) => `${v / 1000}`, unit
 const margin = { top: 8, right: 8, left: 0, bottom: 0 };
 const pad2 = (h: number | string) => String(h).padStart(2, "0");
 
+// recharts' default isAnimationActive="auto" already honours prefers-reduced-motion.
+function GwBars({ data, x, y, name, fill, fmtX, fmtLabel }: {
+  data: readonly object[]; x: string; y: string; name: string; fill: string;
+  fmtX?: (v: number | string) => string; fmtLabel?: (l: string) => string;
+}) {
+  return (
+    <ResponsiveContainer>
+      <BarChart data={data} margin={margin}>
+        <CartesianGrid stroke={C.grid} vertical={false} />
+        <XAxis dataKey={x} tickFormatter={fmtX} {...axisProps} />
+        <YAxis {...gwAxis} />
+        <Tooltip cursor={{ fill: C.grid }} content={(p) => <ClayTooltip {...p} fmtLabel={fmtLabel} />} />
+        <Bar name={name} dataKey={y} fill={fill} radius={[8, 8, 0, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
 export default function Page() {
   const [cutoff, setCutoff] = useState("09:00");
   const [date, setDate] = useState("2026-01-15");
   const acc = useApi<Accuracy>(`/api/accuracy?cutoff=${cutoff}`);
-  const day = useApi<Point[]>(`/api/day?date=${date}&cutoff=${cutoff}`);
-  const animate = !useReducedMotion();
+  const day = useApi<Day>(`/api/day?date=${date}&cutoff=${cutoff}`);
 
   const a = acc.data;
   const o = a?.overall;
   const byDay = new Map(a?.by_day.map((d) => [d.day, d]));
   // Label the day card from the data actually shown, not the pending selection.
-  const shownDate = day.data?.[0] ? new Date(day.data[0].startTime).toLocaleDateString("en-CA", { timeZone: "Europe/London" }) : date;
-  const dayStats = byDay.get(shownDate);
-  const published = day.data?.find((p) => p.publishTime)?.publishTime;
+  const shownDate = day.data?.date ?? date;
+  const dayStats = day.data?.metrics;
+  const points = day.data?.points ?? [];
+  const published = points.find((p) => p.publishTime)?.publishTime;
+  const bins = new Map(a?.histogram.map((b) => [String(b.from), b]));
   const worstHour = a?.by_hour.length ? a.by_hour.reduce((m, h) => (h.p90_shortfall > m.p90_shortfall ? h : m)) : undefined;
   const topLevel = a?.by_level.at(-1);
   const [nearLead, farLead] = [a?.by_lead[0], a?.by_lead.at(-1)];
@@ -197,14 +209,14 @@ export default function Page() {
           </div>
           <div className="explorer">
             <div className="clay">
-              <div className="cal-head"><h3>January 2026</h3></div>
+              <h3 className="cal-title">January 2026</h3>
               <div className="cal" role="group" aria-label="Delivery day">
                 {DOW.map((d) => <span key={d} className="cal-dow" aria-hidden="true">{d}</span>)}
                 {Array.from({ length: JAN1_OFFSET }, (_, i) => <span key={`pad${i}`} />)}
                 {Array.from({ length: 31 }, (_, i) => {
-                  const iso = `2026-01-${String(i + 1).padStart(2, "0")}`;
+                  const iso = `2026-01-${pad2(i + 1)}`;
                   const s = byDay.get(iso);
-                  const sev = !s ? 0 : s.mae >= 3000 ? 2 : s.mae >= 2000 ? 1 : 0;
+                  const sev = s ? SEV.filter((t) => s.mae >= t).length : 0;
                   return (
                     <button key={iso} type="button" className="day" data-sev={sev} aria-pressed={iso === date}
                       aria-label={`${i + 1} January${s ? `, typical miss ${gw(s.mae)}` : ""}`}
@@ -216,9 +228,9 @@ export default function Page() {
                 })}
               </div>
               <div className="legend" aria-hidden="true">
-                <span><i className="swatch" style={{ background: "#fbfcfe" }} />&lt; 2 GW</span>
-                <span><i className="swatch" style={{ background: "#ffefd2" }} />2–3 GW</span>
-                <span><i className="swatch" style={{ background: "#ffd7a8" }} />≥ 3 GW</span>
+                <span><i className="swatch" data-sev={0} />&lt; {SEV[0] / 1000} GW</span>
+                <span><i className="swatch" data-sev={1} />{SEV[0] / 1000}–{SEV[1] / 1000} GW</span>
+                <span><i className="swatch" data-sev={2} />≥ {SEV[1] / 1000} GW</span>
               </div>
             </div>
 
@@ -235,10 +247,10 @@ export default function Page() {
                 </span>
               }
               head={["Time (UK)", "Actual (MW)", "Forecast (MW)"]}
-              rows={(day.data ?? []).map((p) => [ukTime(p.startTime), p.actual, p.forecast ?? "–"])}
+              rows={points.map((p) => [ukTime(p.startTime), p.actual, p.forecast ?? "–"])}
             >
               <ResponsiveContainer>
-                <ComposedChart data={day.data ?? []} margin={margin}>
+                <ComposedChart data={points} margin={margin}>
                   <defs>
                     <linearGradient id="actualFill" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor={C.blue} stopOpacity={0.28} />
@@ -249,8 +261,8 @@ export default function Page() {
                   <XAxis dataKey="startTime" tickFormatter={ukTime} minTickGap={40} {...axisProps} />
                   <YAxis {...gwAxis} />
                   <Tooltip content={(p) => <ClayTooltip {...p} fmtLabel={ukTime} />} />
-                  <Area name="Actual" dataKey="actual" stroke={C.blue} strokeWidth={2.5} fill="url(#actualFill)" isAnimationActive={animate} />
-                  <Line name="Day-ahead forecast" dataKey="forecast" stroke={C.orange} strokeWidth={2.5} dot={false} connectNulls isAnimationActive={animate} />
+                  <Area name="Actual" dataKey="actual" stroke={C.blue} strokeWidth={2.5} fill="url(#actualFill)" />
+                  <Line name="Day-ahead forecast" dataKey="forecast" stroke={C.orange} strokeWidth={2.5} dot={false} connectNulls />
                 </ComposedChart>
               </ResponsiveContainer>
             </ChartCard>
@@ -270,15 +282,8 @@ export default function Page() {
                 head={["Hour (UK)", "P90 shortfall (MW)", "Typical miss (MW)", "Bias (MW)"]}
                 rows={a.by_hour.map((h) => [`${pad2(h.hour)}:00`, Math.round(h.p90_shortfall), Math.round(h.mae), Math.round(h.bias)])}
               >
-                <ResponsiveContainer>
-                  <BarChart data={a.by_hour} margin={margin}>
-                    <CartesianGrid stroke={C.grid} vertical={false} />
-                    <XAxis dataKey="hour" tickFormatter={pad2} {...axisProps} />
-                    <YAxis {...gwAxis} />
-                    <Tooltip cursor={{ fill: C.grid }} content={(p) => <ClayTooltip {...p} fmtLabel={(l) => `${pad2(l)}:00 UK`} />} />
-                    <Bar name="Backup for 90% cover" dataKey="p90_shortfall" fill={C.green} radius={[8, 8, 0, 0]} isAnimationActive={animate} />
-                  </BarChart>
-                </ResponsiveContainer>
+                <GwBars data={a.by_hour} x="hour" y="p90_shortfall" name="Backup for 90% cover" fill={C.green}
+                  fmtX={pad2} fmtLabel={(l) => `${pad2(l)}:00 UK`} />
               </ChartCard>
 
               <ChartCard
@@ -287,15 +292,7 @@ export default function Page() {
                 head={["Forecast level", "Hours", "Bias (MW)", "Typical miss (MW)"]}
                 rows={a.by_level.map((l) => [l.level, l.n, Math.round(l.bias), Math.round(l.mae)])}
               >
-                <ResponsiveContainer>
-                  <BarChart data={a.by_level} margin={margin}>
-                    <CartesianGrid stroke={C.grid} vertical={false} />
-                    <XAxis dataKey="level" {...axisProps} />
-                    <YAxis {...gwAxis} />
-                    <Tooltip cursor={{ fill: C.grid }} content={(p) => <ClayTooltip {...p} />} />
-                    <Bar name="Average over-forecast" dataKey="bias" fill={C.indigo} radius={[8, 8, 0, 0]} isAnimationActive={animate} />
-                  </BarChart>
-                </ResponsiveContainer>
+                <GwBars data={a.by_level} x="level" y="bias" name="Average over-forecast" fill={C.indigo} />
               </ChartCard>
 
               <ChartCard
@@ -304,15 +301,7 @@ export default function Page() {
                 head={["Made ahead by", "Forecasts", "Typical miss (MW)", "RMSE (MW)", "Bias (MW)"]}
                 rows={a.by_lead.map((l) => [l.lead, l.n, Math.round(l.mae), Math.round(l.rmse), Math.round(l.bias)])}
               >
-                <ResponsiveContainer>
-                  <BarChart data={a.by_lead} margin={margin}>
-                    <CartesianGrid stroke={C.grid} vertical={false} />
-                    <XAxis dataKey="lead" {...axisProps} />
-                    <YAxis {...gwAxis} />
-                    <Tooltip cursor={{ fill: C.grid }} content={(p) => <ClayTooltip {...p} />} />
-                    <Bar name="Typical miss" dataKey="mae" fill={C.blue} radius={[8, 8, 0, 0]} isAnimationActive={animate} />
-                  </BarChart>
-                </ResponsiveContainer>
+                <GwBars data={a.by_lead} x="lead" y="mae" name="Typical miss" fill={C.blue} />
               </ChartCard>
 
               <ChartCard
@@ -327,9 +316,9 @@ export default function Page() {
                     <XAxis dataKey="from" tickFormatter={(v: number) => `${v / 1000}`} unit=" GW" {...axisProps} />
                     <YAxis width={40} allowDecimals={false} {...axisProps} />
                     <Tooltip cursor={{ fill: C.grid }} content={(p) => (
-                      <ClayTooltip {...p} fmtLabel={(l) => `${gw(Number(l), true)} to ${gw(Number(l) + 1000, true)}`} fmtValue={(v) => `${v} hours`} />
+                      <ClayTooltip {...p} fmtLabel={(l) => { const b = bins.get(l); return b ? `${gw(b.from, true)} to ${gw(b.to, true)}` : l; }} fmtValue={(v) => `${v} hours`} />
                     )} />
-                    <Bar name="Hours" dataKey="count" radius={[6, 6, 0, 0]} isAnimationActive={animate}>
+                    <Bar name="Hours" dataKey="count" radius={[6, 6, 0, 0]}>
                       {a.histogram.map((b) => <Cell key={b.from} fill={b.from >= 0 ? C.orange : C.green} />)}
                     </Bar>
                   </BarChart>
