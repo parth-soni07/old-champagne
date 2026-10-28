@@ -1,0 +1,239 @@
+/* Apple system palette + claymorphism surfaces. Light only (color-scheme: light).
+   Text colours are the darker accessible variants (>= 4.5:1 on --bg); the bright system
+   colours are used for graphics only (>= 3:1). */
+:root {
+  color-scheme: light;
+  --bg: #eef0f5;
+  --surface-hi: #fbfcfe;
+  --surface-lo: #eceef4;
+  --label: #1d1d1f;
+  --secondary: #5e5e63;
+  --hairline: rgb(0 0 0 / 0.08);
+
+  --blue: #007aff;
+  --blue-text: #0066cc;
+  --orange-text: #b25000;
+  --green-text: #1f7a37;
+  --red-text: #c4001a;
+  --indigo: #5856d6;
+
+  --shade: 166 171 189;
+  --clay:
+    14px 14px 28px rgb(var(--shade) / 0.42),
+    -12px -12px 26px rgb(255 255 255 / 0.95),
+    inset 3px 3px 6px rgb(255 255 255 / 0.85),
+    inset -4px -4px 10px rgb(var(--shade) / 0.22);
+  --clay-sm:
+    6px 6px 12px rgb(var(--shade) / 0.4),
+    -6px -6px 12px rgb(255 255 255 / 0.95),
+    inset 2px 2px 4px rgb(255 255 255 / 0.8),
+    inset -2px -2px 5px rgb(var(--shade) / 0.2);
+  --clay-pressed:
+    inset 5px 5px 10px rgb(var(--shade) / 0.45),
+    inset -5px -5px 10px rgb(255 255 255 / 0.9);
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", var(--font-inter), system-ui, sans-serif;
+  --font-display: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, var(--font-inter), system-ui, sans-serif;
+  --radius: 28px;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--label);
+  font: 17px/1.47 var(--font);
+  letter-spacing: -0.022em;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 { margin: 0; letter-spacing: -0.03em; }
+p { margin: 0; }
+.num { font-variant-numeric: tabular-nums; }
+.sr-only {
+  position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+
+:where(a, button, input, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--blue-text);
+  outline-offset: 3px;
+}
+
+/* ---------- Liquid-glass header ---------- */
+.glass {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgb(255 255 255 / 0.9);
+  border-bottom: 1px solid var(--hairline);
+}
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass {
+    background: rgb(248 249 252 / 0.6);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    backdrop-filter: blur(24px) saturate(180%);
+  }
+}
+.glass-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  align-items: center;
+  justify-content: space-between;
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 17px; }
+.brand-mark {
+  inline-size: 30px; block-size: 30px; border-radius: 9px;
+  display: grid; place-items: center;
+  background: linear-gradient(145deg, #5ac8fa, var(--blue));
+  box-shadow: var(--clay-sm);
+  color: #fff; font-size: 16px;
+}
+
+/* ---------- Segmented control (Apple) ---------- */
+.segmented {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  border: 0; margin: 0; padding: 0; min-inline-size: 0;
+}
+.segmented legend { float: left; font-size: 13px; color: var(--secondary); padding: 0; }
+.segments {
+  display: inline-flex; padding: 4px; gap: 2px;
+  border-radius: 14px; background: var(--surface-lo);
+  box-shadow: var(--clay-pressed);
+}
+.segments label {
+  position: relative;
+  min-block-size: 32px; padding: 6px 12px;
+  border-radius: 10px;
+  font-size: 14px; font-weight: 500; color: var(--secondary);
+  cursor: pointer; display: grid; place-items: center;
+  transition: background 0.2s, box-shadow 0.2s, color 0.2s;
+}
+.segments input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.segments label:has(input:checked) {
+  background: var(--surface-hi); color: var(--label);
+  box-shadow: var(--clay-sm);
+}
+.segments label:has(input:focus-visible) { outline: 3px solid var(--blue-text); outline-offset: 2px; }
+
+/* ---------- Layout ---------- */
+main { max-width: 1120px; margin: 0 auto; padding: 32px 16px 64px; display: grid; gap: 48px; }
+.hero { display: grid; gap: 10px; max-width: 760px; }
+.eyebrow { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--blue-text); }
+.hero h1 { font-size: clamp(30px, 5vw, 48px); line-height: 1.08; font-weight: 700; }
+.hero p { color: var(--secondary); font-size: 19px; }
+section { display: grid; gap: 18px; }
+.section-head { display: grid; gap: 4px; }
+.section-head h2 { font-size: 28px; font-weight: 700; }
+.section-head p { color: var(--secondary); }
+
+.grid { display: grid; gap: 22px; }
+.kpis { grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); }
+.two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); }
+
+/* ---------- Clay surfaces ---------- */
+.clay {
+  /* transparent border shows up in forced-colors mode, where shadows are stripped */
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: linear-gradient(145deg, var(--surface-hi), var(--surface-lo));
+  box-shadow: var(--clay);
+  padding: 22px;
+  min-width: 0;
+}
+
+.kpi { display: grid; gap: 6px; align-content: start; }
+.kpi-label { font-size: 13px; font-weight: 600; color: var(--secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+.kpi-value { font-family: var(--font-display); font-size: clamp(28px, 7vw, 40px); font-weight: 700; line-height: 1.1; letter-spacing: -0.03em; }
+.kpi-note { font-size: 14px; color: var(--secondary); }
+.kpi-icon {
+  inline-size: 40px; block-size: 40px; border-radius: 14px;
+  display: grid; place-items: center; font-size: 20px;
+  box-shadow: var(--clay-sm); margin-block-end: 8px;
+}
+.tone-blue .kpi-icon { background: linear-gradient(145deg, #e3f0ff, #cfe3ff); color: var(--blue-text); }
+.tone-orange .kpi-icon { background: linear-gradient(145deg, #fff2e0, #ffe2bd); color: var(--orange-text); }
+.tone-green .kpi-icon { background: linear-gradient(145deg, #e3f8e8, #c9efd3); color: var(--green-text); }
+.tone-indigo .kpi-icon { background: linear-gradient(145deg, #ecebff, #dad9ff); color: var(--indigo); }
+.tone-orange .kpi-value { color: var(--orange-text); }
+
+/* ---------- Day picker ---------- */
+.explorer { display: grid; gap: 22px; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); align-items: start; }
+@media (max-width: 860px) { .explorer { grid-template-columns: minmax(0, 1fr); } }
+.cal-head { display: flex; justify-content: space-between; align-items: baseline; margin-block-end: 14px; }
+.cal-head h3 { font-size: 20px; }
+.cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+.cal-dow { font-size: 12px; font-weight: 600; color: var(--secondary); text-align: center; }
+.day {
+  appearance: none; border: 1px solid transparent; cursor: pointer;
+  min-block-size: 44px; padding: 4px 2px;
+  border-radius: 14px;
+  background: var(--surface-hi);
+  box-shadow: var(--clay-sm);
+  display: grid; place-items: center;
+  font: inherit; color: var(--label);
+  transition: box-shadow 0.18s, transform 0.18s;
+}
+.day b { font-size: 15px; font-weight: 600; line-height: 1.1; }
+.day span { font-size: 10px; color: #48484a; line-height: 1.1; }
+.day:hover { transform: translateY(-1px); }
+.day[data-sev="1"] { background: linear-gradient(145deg, #fffaf0, #ffefd2); }
+.day[data-sev="2"] { background: linear-gradient(145deg, #fff0dc, #ffd7a8); }
+.day[aria-pressed="true"] { box-shadow: var(--clay-pressed); background: var(--surface-lo); }
+.day[aria-pressed="true"] b { color: var(--blue-text); }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--secondary); margin-block-start: 14px; }
+.swatch { display: inline-block; inline-size: 12px; block-size: 12px; border-radius: 4px; vertical-align: -1px; margin-inline-end: 5px; box-shadow: var(--clay-sm); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 999px;
+  background: var(--surface-hi); box-shadow: var(--clay-sm);
+  font-size: 13px; color: var(--secondary);
+}
+.chip strong { color: var(--label); font-weight: 600; }
+
+/* ---------- Chart cards ---------- */
+figure { margin: 0; display: grid; gap: 14px; }
+.fig-head { display: grid; gap: 4px; }
+.fig-head h3 { font-size: 20px; font-weight: 600; }
+figcaption { font-size: 15px; color: var(--secondary); }
+figcaption strong { color: var(--label); }
+.chart { inline-size: 100%; block-size: 260px; }
+.chart.tall { block-size: 320px; }
+
+details { font-size: 14px; }
+summary { cursor: pointer; color: var(--blue-text); font-weight: 500; inline-size: fit-content; border-radius: 6px; }
+.table-wrap { overflow: auto; margin-block-start: 10px; max-block-size: 280px; }
+table { border-collapse: collapse; inline-size: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: end; padding: 6px 10px; border-bottom: 1px solid var(--hairline); white-space: nowrap; }
+th:first-child, td:first-child { text-align: start; }
+th { color: var(--secondary); font-weight: 600; position: sticky; top: 0; background: var(--surface-lo); }
+
+.tooltip {
+  background: rgb(255 255 255 / 0.94);
+  border-radius: 14px; padding: 10px 12px;
+  box-shadow: var(--clay-sm);
+  font-size: 13px; display: grid; gap: 2px;
+}
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .tooltip { background: rgb(255 255 255 / 0.72); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+}
+
+.alert { border-radius: 18px; padding: 14px 18px; background: #fff0f0; color: var(--red-text); box-shadow: var(--clay-sm); }
+.skeleton { block-size: 100%; min-block-size: 140px; border-radius: 18px; background: var(--surface-lo); box-shadow: var(--clay-pressed); }
+
+footer { color: var(--secondary); font-size: 13px; display: grid; gap: 6px; }
+footer a { color: var(--blue-text); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+  .day:hover { transform: none; }
+}
+@media (forced-colors: active) {
+  .segments label:has(input:checked), .day[aria-pressed="true"] { outline: 2px solid Highlight; }
+}
