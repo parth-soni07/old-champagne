@@ -112,7 +112,9 @@ function downloadCsv(name: string, head: string[], rows: (string | number)[][]) 
   URL.revokeObjectURL(a.href);
 }
 
-type Readout = { key: string; value: string; label: string; facts: string[] };
+/** One fixed shape for every readout: name (+ optional tag), the headline value, then up to three
+ *  label/value facts in a fixed grid, so every chart's readout reads the same way. */
+type Readout = { key: string; tag?: string; value: string; label: string; facts: [string, string][] };
 type Scrub = { sel: number; onMove: (s: MouseHandlerDataParam) => void };
 
 /** A chart you read by scrubbing. A persistent readout under the plot shows every figure for the
@@ -168,8 +170,11 @@ function ChartCard({ title, subtitle, size = "", stale, unit, count, initial, re
           return (
             <div key={i} className="ro-item" data-on={i === sel}>
               <span className="ro-key">{r.key}</span>
+              {r.tag && <span className="ro-tag">{r.tag}</span>}
               <span className="ro-main"><strong className="num">{r.value}</strong> {r.label}</span>
-              {r.facts.map((f) => <span key={f} className="ro-fact">{f}</span>)}
+              <dl className="ro-facts">
+                {r.facts.map(([k, v]) => <div key={k}><dt>{k}</dt><dd className="num">{v}</dd></div>)}
+              </dl>
             </div>
           );
         })}
@@ -309,7 +314,8 @@ const Insights = memo(function Insights({ a, cutoff, month, stale, loading }: {
             readout={(i) => {
               const h = a.by_hour[i];
               return { key: `${pad2(h.hour)}:00 uk`, value: gw(h.p90_shortfall), label: "covers 9 in 10 hours",
-                facts: [`${gw(h.p90_shortfall - o.p90_shortfall, true)} vs flat`, `typical miss ${gw(h.mae)}`, `bias ${gw(h.bias, true)}`] };
+                tag: h.hour === a.by_hour[peak].hour ? "peak" : undefined,
+                facts: [["vs flat", gw(h.p90_shortfall - o.p90_shortfall, true)], ["typical miss", gw(h.mae)], ["bias", gw(h.bias, true)]] };
             }}
             table={{ name: `backup-by-hour-${cutoff.replace(":", "")}`, head: ["hour (uk)", "backup for 90% cover (MW)", "typical miss (MW)", "bias (MW)"],
               rows: a.by_hour.map((h) => [`${pad2(h.hour)}:00`, Math.round(h.p90_shortfall), Math.round(h.mae), Math.round(h.bias)]) }}
@@ -330,7 +336,8 @@ const Insights = memo(function Insights({ a, cutoff, month, stale, loading }: {
               initial={top}
               readout={(i) => {
                 const l = a.by_level[i];
-                return { key: l.level, value: gw(l.bias, true), label: "over-forecast", facts: [`${l.n} hours`, `miss ${gw(l.mae)}`] };
+                return { key: `${l.level} forecast`, tag: i === top ? "biggest gap" : undefined, value: gw(l.bias, true), label: "over-forecast",
+                  facts: [["typical miss", gw(l.mae)], ["hours", `${l.n}`]] };
               }}
               table={{ name: `bias-by-level-${cutoff.replace(":", "")}`, head: ["forecast level", "hours", "bias (MW)", "typical miss (MW)"],
                 rows: a.by_level.map((l) => [l.level, l.n, Math.round(l.bias), Math.round(l.mae)]) }}
@@ -350,8 +357,8 @@ const Insights = memo(function Insights({ a, cutoff, month, stale, loading }: {
               initial={Math.max(0, a.by_lead.findIndex(inWindow))}
               readout={(i) => {
                 const l = a.by_lead[i];
-                return { key: `${l.lead} ahead`, value: gw(l.mae), label: inWindow(l) ? "miss · your window" : "typical miss",
-                  facts: [`rmse ${gw(l.rmse)}`, `bias ${gw(l.bias, true)}`, `${l.n.toLocaleString("en-GB")} forecasts`] };
+                return { key: `${l.lead} ahead`, tag: inWindow(l) ? "your window" : undefined, value: gw(l.mae), label: "typical miss",
+                  facts: [["rmse", gw(l.rmse)], ["bias", gw(l.bias, true)], ["forecasts", l.n.toLocaleString("en-GB")]] };
               }}
               table={{ name: `miss-by-lead-${cutoff.replace(":", "")}`, head: ["made ahead by", "forecasts", "typical miss (MW)", "rmse (MW)", "bias (MW)"],
                 rows: a.by_lead.map((l) => [l.lead, l.n, Math.round(l.mae), Math.round(l.rmse), Math.round(l.bias)]) }}
@@ -376,8 +383,8 @@ const Insights = memo(function Insights({ a, cutoff, month, stale, loading }: {
               initial={p90Bin}
               readout={(i) => {
                 const b = hist[i];
-                return { key: `${gw(b.from, true)} to ${gw(b.to, true)}`, value: `${b.count}`, label: b.from >= 0 ? "hours short" : "hours of spare wind",
-                  facts: [`${Math.round(b.below * 100)}% of hours at or below`] };
+                return { key: `${gw(b.from, true)} to ${gw(b.to, true)}`, tag: b.from >= 0 ? "shortfall" : "spare wind", value: `${b.count}`, label: "hours",
+                  facts: [["hours at or below", `${Math.round(b.below * 100)}%`], ["share of hours", `${Math.round((b.count / (total || 1)) * 100)}%`]] };
               }}
               table={{ name: `error-histogram-${cutoff.replace(":", "")}`, head: ["error from (MW)", "error to (MW)", "hours"],
                 rows: hist.map((b) => [b.from, b.to, b.count]) }}
@@ -544,9 +551,10 @@ export default function Page() {
               readout={(i) => {
                 const p = points[i];
                 return p.forecast == null
-                  ? { key: ukTime(p.startTime), value: gw(p.actual), label: "actual", facts: ["no forecast at the half hour"] }
-                  : { key: ukTime(p.startTime), value: gw(p.forecast - p.actual, true), label: p.forecast > p.actual ? "short of forecast" : "above forecast",
-                      facts: [`actual ${gw(p.actual)}`, `forecast ${gw(p.forecast)}`] };
+                  ? { key: ukTime(p.startTime), value: gw(p.actual), label: "actual", facts: [["forecast", "hourly only"]] }
+                  : { key: ukTime(p.startTime), tag: i === worstPoint ? "biggest miss" : undefined, value: gw(p.forecast - p.actual, true),
+                      label: p.forecast > p.actual ? "short of forecast" : "above forecast",
+                      facts: [["actual", gw(p.actual)], ["forecast", gw(p.forecast)]] };
               }}
               table={{ name: `day-${shownDate}-${cutoff.replace(":", "")}`, head: ["time (uk)", "actual (MW)", "forecast (MW)"],
                 rows: points.map((p) => [ukTime(p.startTime), p.actual, p.forecast ?? ""]) }}
