@@ -31,17 +31,17 @@ const ukDateTime = (iso: string) =>
   new Date(iso).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" });
 
 function useApi<T>(url: string) {
-  const [state, setState] = useState<{ url?: string; data?: T; error?: string }>({});
+  const [state, setState] = useState<{ url?: string; dataUrl?: string; data?: T; error?: string }>({});
   useEffect(() => {
     const ctrl = new AbortController();
     fetch(url, { signal: ctrl.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`The data service returned ${r.status}.`))))
-      .then((data: T) => setState({ url, data }))
+      .then((data: T) => setState({ url, dataUrl: url, data }))
       .catch((e: Error) => e.name !== "AbortError" && setState((s) => ({ ...s, url, error: e.message })));
     return () => ctrl.abort();
   }, [url]);
-  // Keep showing the previous data while the next request is in flight.
-  return { data: state.data, error: state.url === url ? state.error : undefined, loading: state.url !== url };
+  // Previous data stays on screen (dimmed via `stale`) while the next request is in flight or failed.
+  return { data: state.data, error: state.url === url ? state.error : undefined, stale: state.dataUrl !== url };
 }
 
 const motionQuery = "(prefers-reduced-motion: reduce)";
@@ -117,6 +117,9 @@ function Kpi({ tone, icon, label, value, note }: { tone: string; icon: keyof typ
 }
 
 const axisProps = { stroke: C.axis, fontSize: 12, tickLine: false, axisLine: false } as const;
+const gwAxis = { ...axisProps, tickFormatter: (v: number) => `${v / 1000}`, unit: " GW", width: 56 } as const;
+const margin = { top: 8, right: 8, left: 0, bottom: 0 };
+const pad2 = (h: number | string) => String(h).padStart(2, "0");
 
 export default function Page() {
   const [cutoff, setCutoff] = useState("09:00");
@@ -127,10 +130,14 @@ export default function Page() {
 
   const a = acc.data;
   const o = a?.overall;
-  const dayStats = a?.by_day.find((d) => d.day === date);
+  const byDay = new Map(a?.by_day.map((d) => [d.day, d]));
+  // Label the day card from the data actually shown, not the pending selection.
+  const shownDate = day.data?.[0] ? new Date(day.data[0].startTime).toLocaleDateString("en-CA", { timeZone: "Europe/London" }) : date;
+  const dayStats = byDay.get(shownDate);
   const published = day.data?.find((p) => p.publishTime)?.publishTime;
-  const worstHour = a?.by_hour.reduce((m, h) => (h.p90_shortfall > m.p90_shortfall ? h : m));
+  const worstHour = a?.by_hour.length ? a.by_hour.reduce((m, h) => (h.p90_shortfall > m.p90_shortfall ? h : m)) : undefined;
   const topLevel = a?.by_level.at(-1);
+  const [nearLead, farLead] = [a?.by_lead[0], a?.by_lead.at(-1)];
   const error = acc.error ?? day.error;
 
   return (
@@ -164,10 +171,10 @@ export default function Page() {
 
         {error && <div className="alert" role="alert">Couldn&rsquo;t load the data. {error}</div>}
 
-        <section aria-labelledby="kpi-h" aria-busy={acc.loading}>
+        <section aria-labelledby="kpi-h" aria-busy={acc.stale}>
           <div className="section-head">
             <h2 id="kpi-h">January at a glance</h2>
-            <p>Day-ahead forecast as available at {cutoff} UK on the day before, across all 744 hours of the month.</p>
+            <p>{o ? <>Day-ahead forecast as available at {a.cutoff} UK on the day before, across {o.n} hours of the month.</> : "Loading…"}</p>
           </div>
           <div className="grid kpis">
             {o ? (
@@ -183,7 +190,7 @@ export default function Page() {
           </div>
         </section>
 
-        <section aria-labelledby="day-h">
+        <section aria-labelledby="day-h" aria-busy={day.stale}>
           <div className="section-head">
             <h2 id="day-h">Pick a delivery day</h2>
             <p>Each tile shows that day&rsquo;s typical miss. Warmer tiles had bigger misses.</p>
@@ -196,7 +203,7 @@ export default function Page() {
                 {Array.from({ length: JAN1_OFFSET }, (_, i) => <span key={`pad${i}`} />)}
                 {Array.from({ length: 31 }, (_, i) => {
                   const iso = `2026-01-${String(i + 1).padStart(2, "0")}`;
-                  const s = a?.by_day.find((d) => d.day === iso);
+                  const s = byDay.get(iso);
                   const sev = !s ? 0 : s.mae >= 3000 ? 2 : s.mae >= 2000 ? 1 : 0;
                   return (
                     <button key={iso} type="button" className="day" data-sev={sev} aria-pressed={iso === date}
@@ -217,7 +224,7 @@ export default function Page() {
 
             <ChartCard
               tall
-              title={new Date(`${date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}
+              title={new Date(`${shownDate}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" })}
               caption={
                 <span className="chips">
                   <span className="chip"><span aria-hidden="true" style={{ color: C.blue }}>●</span> Actual</span>
@@ -231,7 +238,7 @@ export default function Page() {
               rows={(day.data ?? []).map((p) => [ukTime(p.startTime), p.actual, p.forecast ?? "–"])}
             >
               <ResponsiveContainer>
-                <ComposedChart data={day.data ?? []} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <ComposedChart data={day.data ?? []} margin={margin}>
                   <defs>
                     <linearGradient id="actualFill" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor={C.blue} stopOpacity={0.28} />
@@ -240,7 +247,7 @@ export default function Page() {
                   </defs>
                   <CartesianGrid stroke={C.grid} vertical={false} />
                   <XAxis dataKey="startTime" tickFormatter={ukTime} minTickGap={40} {...axisProps} />
-                  <YAxis tickFormatter={(v: number) => `${v / 1000}`} unit=" GW" width={56} {...axisProps} />
+                  <YAxis {...gwAxis} />
                   <Tooltip content={(p) => <ClayTooltip {...p} fmtLabel={ukTime} />} />
                   <Area name="Actual" dataKey="actual" stroke={C.blue} strokeWidth={2.5} fill="url(#actualFill)" isAnimationActive={animate} />
                   <Line name="Day-ahead forecast" dataKey="forecast" stroke={C.orange} strokeWidth={2.5} dot={false} connectNulls isAnimationActive={animate} />
@@ -251,7 +258,7 @@ export default function Page() {
         </section>
 
         {a && (
-          <section aria-labelledby="ins-h">
+          <section aria-labelledby="ins-h" aria-busy={acc.stale}>
             <div className="section-head">
               <h2 id="ins-h">What January tells a buyer</h2>
               <p>Error is forecast minus actual. A positive error means wind under-delivered, so you had to buy the gap.</p>
@@ -259,16 +266,16 @@ export default function Page() {
             <div className="grid two">
               <ChartCard
                 title="Backup to hold, hour by hour"
-                caption={worstHour && <>Hold most backup around <strong>{String(worstHour.hour).padStart(2, "0")}:00</strong> UK, when covering 9 of 10 hours needs <strong className="num">{gw(worstHour.p90_shortfall)}</strong>.</>}
+                caption={worstHour && <>Hold most backup around <strong>{pad2(worstHour.hour)}:00</strong> UK, when covering 9 of 10 hours needs <strong className="num">{gw(worstHour.p90_shortfall)}</strong>.</>}
                 head={["Hour (UK)", "P90 shortfall (MW)", "Typical miss (MW)", "Bias (MW)"]}
-                rows={a.by_hour.map((h) => [`${String(h.hour).padStart(2, "0")}:00`, Math.round(h.p90_shortfall), Math.round(h.mae), Math.round(h.bias)])}
+                rows={a.by_hour.map((h) => [`${pad2(h.hour)}:00`, Math.round(h.p90_shortfall), Math.round(h.mae), Math.round(h.bias)])}
               >
                 <ResponsiveContainer>
-                  <BarChart data={a.by_hour} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <BarChart data={a.by_hour} margin={margin}>
                     <CartesianGrid stroke={C.grid} vertical={false} />
-                    <XAxis dataKey="hour" tickFormatter={(h: number) => String(h).padStart(2, "0")} {...axisProps} />
-                    <YAxis tickFormatter={(v: number) => `${v / 1000}`} unit=" GW" width={56} {...axisProps} />
-                    <Tooltip cursor={{ fill: C.grid }} content={(p) => <ClayTooltip {...p} fmtLabel={(l) => `${l.padStart(2, "0")}:00 UK`} />} />
+                    <XAxis dataKey="hour" tickFormatter={pad2} {...axisProps} />
+                    <YAxis {...gwAxis} />
+                    <Tooltip cursor={{ fill: C.grid }} content={(p) => <ClayTooltip {...p} fmtLabel={(l) => `${pad2(l)}:00 UK`} />} />
                     <Bar name="Backup for 90% cover" dataKey="p90_shortfall" fill={C.green} radius={[8, 8, 0, 0]} isAnimationActive={animate} />
                   </BarChart>
                 </ResponsiveContainer>
@@ -281,10 +288,10 @@ export default function Page() {
                 rows={a.by_level.map((l) => [l.level, l.n, Math.round(l.bias), Math.round(l.mae)])}
               >
                 <ResponsiveContainer>
-                  <BarChart data={a.by_level} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <BarChart data={a.by_level} margin={margin}>
                     <CartesianGrid stroke={C.grid} vertical={false} />
                     <XAxis dataKey="level" {...axisProps} />
-                    <YAxis tickFormatter={(v: number) => `${v / 1000}`} unit=" GW" width={56} {...axisProps} />
+                    <YAxis {...gwAxis} />
                     <Tooltip cursor={{ fill: C.grid }} content={(p) => <ClayTooltip {...p} />} />
                     <Bar name="Average over-forecast" dataKey="bias" fill={C.indigo} radius={[8, 8, 0, 0]} isAnimationActive={animate} />
                   </BarChart>
@@ -293,15 +300,15 @@ export default function Page() {
 
               <ChartCard
                 title="Fresher forecasts miss less"
-                caption={<>Typical miss grows from <strong className="num">{gw(a.by_lead[0].mae)}</strong> for forecasts made under 6 hours ahead to <strong className="num">{gw(a.by_lead.at(-1)!.mae)}</strong> at 2–3 days ahead.</>}
+                caption={nearLead && farLead && <>Typical miss grows from <strong className="num">{gw(nearLead.mae)}</strong> for forecasts made {nearLead.lead} ahead to <strong className="num">{gw(farLead.mae)}</strong> at {farLead.lead} ahead.</>}
                 head={["Made ahead by", "Forecasts", "Typical miss (MW)", "RMSE (MW)", "Bias (MW)"]}
                 rows={a.by_lead.map((l) => [l.lead, l.n, Math.round(l.mae), Math.round(l.rmse), Math.round(l.bias)])}
               >
                 <ResponsiveContainer>
-                  <BarChart data={a.by_lead} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <BarChart data={a.by_lead} margin={margin}>
                     <CartesianGrid stroke={C.grid} vertical={false} />
                     <XAxis dataKey="lead" {...axisProps} />
-                    <YAxis tickFormatter={(v: number) => `${v / 1000}`} unit=" GW" width={56} {...axisProps} />
+                    <YAxis {...gwAxis} />
                     <Tooltip cursor={{ fill: C.grid }} content={(p) => <ClayTooltip {...p} />} />
                     <Bar name="Typical miss" dataKey="mae" fill={C.blue} radius={[8, 8, 0, 0]} isAnimationActive={animate} />
                   </BarChart>
@@ -315,7 +322,7 @@ export default function Page() {
                 rows={a.histogram.filter((b) => b.count).map((b) => [`${b.from.toLocaleString("en-GB")} to ${b.to.toLocaleString("en-GB")}`, b.count])}
               >
                 <ResponsiveContainer>
-                  <BarChart data={a.histogram} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <BarChart data={a.histogram} margin={margin}>
                     <CartesianGrid stroke={C.grid} vertical={false} />
                     <XAxis dataKey="from" tickFormatter={(v: number) => `${v / 1000}`} unit=" GW" {...axisProps} />
                     <YAxis width={40} allowDecimals={false} {...axisProps} />
