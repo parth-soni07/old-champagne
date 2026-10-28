@@ -4,6 +4,8 @@ The UI of a pilot portal for a UK energy buyer. It shows the latest national win
 available at the day-ahead decision time, against what the wind actually delivered, and how much
 backup that error should cost. Data comes from the API in [ethan](https://github.com/parth-soni07/ethan).
 
+**Live app:** https://old-champagne.vercel.app
+
 ## AI tools disclosure
 
 AI tools were used to build this project. Claude Code (Anthropic) helped with scaffolding, code,
