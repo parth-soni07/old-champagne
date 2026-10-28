@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 
 /* Decorative, data-driven backdrop: a landscape of wind turbines (plus a solar farm as scenery;
  * the data is wind-only) whose rotors turn at the selected day's actual wind, and a canvas of
@@ -63,7 +63,9 @@ const Cloud = ({ x, y, s }: { x: number; y: number; s: number }) => (
   </g>
 );
 
-export function Scene({ windiness, motion }: Props) {
+/** Scene: the landscape markup never changes (only animation speed does, via the Web Animations
+ *  API), so it is memoised and a calendar click doesn't re-render hundreds of SVG nodes. */
+export const Scene = memo(function Scene({ windiness, motion }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const animsRef = useRef<Animation[]>([]);
 
@@ -93,6 +95,14 @@ export function Scene({ windiness, motion }: Props) {
 
   return (
     <div className="scene" aria-hidden="true" data-motion={motion ? "on" : "off"}>
+      <Landscape svgRef={svgRef} />
+      <WindCanvas windiness={windiness} motion={motion} />
+    </div>
+  );
+});
+
+const Landscape = memo(function Landscape({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | null> }) {
+  return (
       <svg ref={svgRef} viewBox="0 0 1440 900" preserveAspectRatio="xMidYMax slice" focusable="false">
         <defs>
           <linearGradient id="tower" x1="0" x2="1"><stop offset="0" stopColor="#ffffff" /><stop offset="1" stopColor="#bfcbdd" /></linearGradient>
@@ -113,10 +123,8 @@ export function Scene({ windiness, motion }: Props) {
         {TURBINES.filter((t) => t[3] >= 0.5).map(([x, y, s, d], i) => <Turbine key={i} x={x} y={y} s={s} depth={d} />)}
         <SolarFarm />
       </svg>
-      <WindCanvas windiness={windiness} motion={motion} />
-    </div>
   );
-}
+});
 
 function WindCanvas({ windiness, motion }: Props) {
   const ref = useRef<HTMLCanvasElement>(null);

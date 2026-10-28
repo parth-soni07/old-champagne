@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, useEffect, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import {
-  Area, Bar, BarChart, CartesianGrid, Cell, ComposedChart, LabelList, Line, ReferenceLine, ResponsiveContainer,
-  Tooltip, XAxis, YAxis,
+  Area, Bar, BarChart, CartesianGrid, Cell, ComposedChart, LabelList, Line, ReferenceDot, ReferenceLine,
+  ResponsiveContainer, Tooltip, XAxis, YAxis, type MouseHandlerDataParam,
 } from "recharts";
 import { Scene } from "./scene";
 
@@ -39,7 +39,6 @@ const gw = (mw: number, signed = false) => {
   const v = Math.round(mw / 100) / 10 || 0; // `|| 0` turns -0 into 0, so no "-0.0 GW"
   return `${signed && v > 0 ? "+" : ""}${v.toFixed(1)} GW`;
 };
-const mwFmt = (mw: number) => `${Math.round(mw).toLocaleString("en-GB")} MW`;
 const pad2 = (h: number | string) => String(h).padStart(2, "0");
 const ukTime = (iso: string) =>
   new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" });
@@ -48,6 +47,7 @@ const ukDateTime = (iso: string) =>
 // Calendar dates ("YYYY-MM-DD") read at noon UTC, so no viewer timezone can shift the day.
 const calDate = (iso: string, opts: Intl.DateTimeFormatOptions) =>
   new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { ...opts, timeZone: "UTC" }).toLowerCase();
+const argmax = <T,>(xs: T[], f: (x: T) => number) => xs.reduce((best, x, i) => (f(x) > f(xs[best]) ? i : best), 0);
 
 /** Clean ticks (dataviz: round numbers, at most 5 steps) covering [lo, hi] in MW. */
 function niceTicks(lo: number, hi: number): number[] {
@@ -57,18 +57,29 @@ function niceTicks(lo: number, hi: number): number[] {
   return ticks;
 }
 
-/** Fetches `url` (skips while null). Previous data stays on screen, flagged `stale`, while the
+// The data is a static snapshot, so a response never changes: cache the request per URL. Calendar
+// tiles prefetch on hover/focus, so a click usually finds its day already loaded.
+const responses = new Map<string, Promise<unknown>>();
+function request<T>(url: string): Promise<T> {
+  if (!responses.has(url)) {
+    const p = fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`the data service returned ${r.status}.`))));
+    p.catch(() => responses.delete(url)); // never cache a failure
+    responses.set(url, p);
+  }
+  return responses.get(url) as Promise<T>;
+}
+
+/** Loads `url` (skips while null). Previous data stays on screen, flagged `stale`, while the
  *  next request is in flight (`loading`) or after it failed (`error`). */
 function useApi<T>(url: string | null) {
   const [state, setState] = useState<{ url?: string; dataUrl?: string; data?: T; error?: string }>({});
   useEffect(() => {
     if (!url) return;
-    const ctrl = new AbortController();
-    fetch(url, { signal: ctrl.signal })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`the data service returned ${r.status}.`))))
-      .then((data: T) => setState({ url, dataUrl: url, data }))
-      .catch((e: Error) => e.name !== "AbortError" && setState((s) => ({ ...s, url, error: e.message })));
-    return () => ctrl.abort();
+    let current = true; // a newer URL wins even if this response arrives later
+    request<T>(url)
+      .then((data) => current && setState({ url, dataUrl: url, data }))
+      .catch((e: Error) => current && setState((s) => ({ ...s, url, error: e.message })));
+    return () => { current = false; };
   }, [url]);
   return {
     data: state.data,
@@ -92,33 +103,44 @@ function useMotion() {
   return [on, () => setChoice(!on)] as const;
 }
 
-type TipItem = { name?: unknown; value?: unknown; color?: string };
-/** Values lead, labels follow; series keyed by a short line in the series colour (dataviz). */
-function ClayTooltip({ active, payload, label, fmtLabel, fmtValue = (v) => mwFmt(v) }: {
-  active?: boolean; payload?: readonly TipItem[]; label?: unknown;
-  fmtLabel?: (l: string) => string; fmtValue?: (v: number) => string;
-}) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="tooltip">
-      <span className="tip-label">{fmtLabel ? fmtLabel(String(label)) : String(label)}</span>
-      {payload.filter((p) => p.value != null).map((p) => (
-        <span key={String(p.name)} className="tip-row">
-          <i className="tip-key" style={{ background: p.color }} aria-hidden="true" />
-          <strong className="num">{fmtValue(Number(p.value))}</strong> {String(p.name)}
-        </span>
-      ))}
-    </div>
-  );
+/** Exact figures as a spreadsheet: the analyst's table view. Fields are quoted when needed. */
+function downloadCsv(name: string, head: string[], rows: (string | number)[][]) {
+  const cell = (v: string | number) => (/[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+  const blob = new Blob([[head, ...rows].map((r) => r.map(cell).join(",")).join("\n")], { type: "text/csv" });
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `${name}.csv` });
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
-/** Chart container with its table twin (dataviz: every chart has a table view). The table
- *  replaces the chart in the same frame, so opening it never resizes the neighbouring cards. */
-function ChartCard({ title, subtitle, head, rows, size = "", stale, unit, children }: {
-  title: string; subtitle: ReactNode; head: string[]; rows: (string | number)[][]; size?: "" | "tall" | "short";
-  stale?: boolean; unit?: string; children: ReactNode;
+type Readout = { key: string; value: string; label: string; facts: string[] };
+type Scrub = { sel: number; onMove: (s: MouseHandlerDataParam) => void };
+
+/** A chart you read by scrubbing. A persistent readout under the plot shows every figure for the
+ *  selected mark: it replaces both the floating tooltip and the cramped table view. It opens on
+ *  the mark the story is about (`initial`), follows pointer / touch, and arrow keys step through
+ *  the marks (dataviz: keyboard focus shows the same as hover; tooltips enhance, never gate).
+ *  Screen readers also get the full table, and "csv" exports exact values. */
+function ChartCard({ title, subtitle, size = "", stale, unit, count, initial, readout, table, children }: {
+  title: string; subtitle: ReactNode; size?: "" | "tall" | "short"; stale?: boolean; unit?: string;
+  count: number; initial: number; readout: (i: number) => Readout;
+  table: { name: string; head: string[]; rows: (string | number)[][] };
+  children: (scrub: Scrub) => ReactNode;
 }) {
-  const [view, setView] = useState<"chart" | "table">("chart");
+  // A selection belongs to the story it started from: when new data moves the story, reset to it.
+  const [pick, setPick] = useState<{ base: number; i: number } | null>(null);
+  const sel = pick && pick.base === initial && pick.i < count ? pick.i : Math.min(initial, Math.max(count - 1, 0));
+  const choose = (i: number) => setPick({ base: initial, i: Math.max(0, Math.min(count - 1, i)) });
+  const onMove = (s: MouseHandlerDataParam) => {
+    const i = Number(s?.activeTooltipIndex);
+    if (Number.isInteger(i) && i >= 0 && i !== sel) choose(i);
+  };
+  const onKey = (e: KeyboardEvent) => {
+    const next = { ArrowRight: sel + 1, ArrowLeft: sel - 1, Home: 0, End: count - 1 }[e.key];
+    if (next === undefined) return;
+    e.preventDefault();
+    choose(next);
+  };
+  const r = count ? readout(sel) : null;
   return (
     <figure className="clay card" data-stale={stale}>
       <div className="card-head">
@@ -126,28 +148,33 @@ function ChartCard({ title, subtitle, head, rows, size = "", stale, unit, childr
           <h3>{title}</h3>
           <span className="fig-note">{subtitle}</span>
         </figcaption>
-        <div className="view-toggle" role="group" aria-label={`${title}: view`}>
-          {(["chart", "table"] as const).map((v) => (
-            <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)}>{v}</button>
-          ))}
+        <button type="button" className="csv" onClick={() => downloadCsv(table.name, table.head, table.rows)}
+          aria-label={`download ${title} as csv`}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
+          csv
+        </button>
+      </div>
+      <div className={`plot ${size}`} tabIndex={0} onKeyDown={onKey}
+        aria-label={`${title}. chart: use the left and right arrow keys to read each value.`}>
+        <div className="chart" aria-hidden="true">
+          {unit && <span className="axis-unit">{unit}</span>}
+          {children({ sel, onMove })}
         </div>
       </div>
-      <div className={`plot ${size}`}>
-        {view === "chart" ? (
-          <div className="chart" aria-hidden="true">
-            {unit && <span className="axis-unit">{unit}</span>}
-            {children}
-          </div>
-        ) : (
-          <div className="table-wrap" tabIndex={0} role="region" aria-label={`${title}: data`}>
-            <table>
-              <caption className="sr-only">{title}</caption>
-              <thead><tr>{head.map((h) => <th key={h} scope="col">{h}</th>)}</tr></thead>
-              <tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j}>{c}</td>)}</tr>)}</tbody>
-            </table>
-          </div>
+      <div className="readout" aria-live="polite" aria-atomic="true">
+        {r && (
+          <>
+            <span className="ro-key">{r.key}</span>
+            <span className="ro-main"><strong className="num">{r.value}</strong> {r.label}</span>
+            {r.facts.map((f) => <span key={f} className="ro-fact">{f}</span>)}
+          </>
         )}
       </div>
+      <table className="sr-only">
+        <caption>{title}</caption>
+        <thead><tr>{table.head.map((h) => <th key={h} scope="col">{h}</th>)}</tr></thead>
+        <tbody>{table.rows.map((row, i) => <tr key={i}>{row.map((c, j) => <td key={j}>{c}</td>)}</tr>)}</tbody>
+      </table>
     </figure>
   );
 }
@@ -197,35 +224,40 @@ function Kpi({ tone, icon, label, value, note, trend, mark }: {
 const axisProps = { stroke: C.axis, fontSize: 12, tickLine: false, axisLine: false } as const;
 const margin = { top: 28, right: 8, left: 0, bottom: 0 }; // top room for the axis-unit label
 const toGw = (v: number) => `${v / 1000}`;
+// Recharts tracks the pointer through its tooltip state; the readout renders it, so the tooltip draws nothing.
+const pointerOnly = <Tooltip content={() => null} cursor={false} isAnimationActive={false} />;
+const selectedRing = (on: boolean) => (on ? { stroke: C.ink, strokeWidth: 2 } : {});
 
 /** Single-series column chart in the "emphasis" form: the bars the story is about in the accent,
- *  the rest in grey, a value label on the emphasised bars only, and an optional reference line. */
-function EmphasisBars<T extends object>({ data, x, y, name, emphasis, fmtX, fmtLabel, refLine }: {
-  data: T[]; x: keyof T & string; y: keyof T & string; name: string; emphasis: (d: T) => boolean;
-  fmtX?: (v: number | string) => string; fmtLabel?: (l: string) => string; refLine?: { y: number; label: string };
+ *  the rest in grey, a value label on a lone emphasised bar, an optional reference line, and an
+ *  outline on the bar the readout is showing. */
+function EmphasisBars<T extends object>({ data, x, y, emphasis, fmtX, refLine, scrub }: {
+  data: T[]; x: keyof T & string; y: keyof T & string; emphasis: (d: T) => boolean;
+  fmtX?: (v: number | string) => string; refLine?: { y: number; label: string }; scrub: Scrub;
 }) {
   const values = data.map((d) => Number(d[y]));
   const labelled = data.filter(emphasis).length === 1; // dataviz: label selectively, never a crowd
   const ticks = niceTicks(Math.min(...values, refLine?.y ?? 0), Math.max(...values, refLine?.y ?? 0));
   return (
     <ResponsiveContainer>
-      <BarChart data={data} margin={refLine ? { ...margin, right: 84 } : margin} accessibilityLayer={false} barCategoryGap="18%">
+      <BarChart data={data} margin={refLine ? { ...margin, right: 84 } : margin} accessibilityLayer={false} barCategoryGap="18%"
+        onMouseMove={scrub.onMove} onClick={scrub.onMove} onTouchMove={scrub.onMove}>
         <CartesianGrid stroke={C.grid} vertical={false} />
         {/* few categories: show every label; many (24 hours): let recharts thin them */}
         <XAxis dataKey={x as string} tickFormatter={fmtX} {...axisProps} interval={data.length <= 8 ? 0 : "preserveStartEnd"} />
         <YAxis {...axisProps} width={32} ticks={ticks} domain={[ticks[0], ticks.at(-1)!]} tickFormatter={toGw} />
-        <Tooltip cursor={{ fill: C.grid }} content={(p) => <ClayTooltip {...p} fmtLabel={fmtLabel} />} />
+        {pointerOnly}
         {refLine && (
           <ReferenceLine y={refLine.y} stroke={C.axis} strokeWidth={1}
             label={{ value: refLine.label, position: "right", fill: C.axis, fontSize: 12 }} />
         )}
-        <Bar name={name} dataKey={y as string} maxBarSize={24} radius={[4, 4, 0, 0]} activeBar={{ fillOpacity: 0.8 }}>
-          {data.map((d, i) => <Cell key={i} fill={emphasis(d) ? C.blue : C.muted} />)}
+        <Bar dataKey={y as string} maxBarSize={24} radius={[4, 4, 0, 0]} isAnimationActive={false}>
+          {data.map((d, i) => <Cell key={i} fill={emphasis(d) ? C.blue : C.muted} {...selectedRing(i === scrub.sel)} />)}
           <LabelList dataKey={y as string} content={(p) => {
             const i = Number(p.index);
             if (!labelled || !data[i] || !emphasis(data[i])) return null;
             return (
-              <text x={Number(p.x) + Number(p.width) / 2} y={Number(p.y) - 6} textAnchor="middle" fill={C.ink} fontSize={12} fontWeight={700}>
+              <text x={Number(p.x) + Number(p.width) / 2} y={Number(p.y) - 8} textAnchor="middle" fill={C.ink} fontSize={12} fontWeight={700}>
                 {gw(Number(p.value))}
               </text>
             );
@@ -235,6 +267,138 @@ function EmphasisBars<T extends object>({ data, x, y, name, emphasis, fmtX, fmtL
     </ResponsiveContainer>
   );
 }
+
+/** The month's insight charts. Memoised: they depend only on the month's data and the cutoff, so
+ *  a calendar click (which re-renders the page) does not re-render these four charts. */
+const Insights = memo(function Insights({ a, cutoff, month, stale, loading }: {
+  a: Accuracy; cutoff: string; month: string; stale: boolean; loading: boolean;
+}) {
+  // Insight inputs, all derived from the response so titles state what this cutoff shows.
+  const o = a.overall;
+  const peak = argmax(a.by_hour, (h) => h.p90_shortfall);
+  const top = a.by_level.length - 1;
+  const [daLo, daHi] = a.day_ahead_lead_h;
+  const inWindow = (l: { lo: number; hi: number }) => l.hi > daLo && l.lo < daHi;
+  const total = a.histogram.reduce((s, b) => s + b.count, 0);
+  const hist = a.histogram.map((b, i, all) => ({
+    ...b, mid: (b.from + b.to) / 2, below: all.slice(0, i + 1).reduce((s, x) => s + x.count, 0) / (total || 1),
+  }));
+  const histTicks = hist.length ? niceTicks(hist[0].from, hist.at(-1)!.to).filter((t) => t >= hist[0].from) : [];
+  const p90Bin = Math.max(0, hist.findIndex((b) => b.from <= o.p90_shortfall && o.p90_shortfall < b.to));
+  return (
+      <section aria-labelledby="ins-h" aria-busy={loading}>
+        <div className="section-head">
+          <h2 id="ins-h">what {month} taught a buyer</h2>
+          <p>error = forecast − actual. positive means the wind fell short and you bought the gap. drag across a chart to read it.</p>
+        </div>
+        <div className="insights" data-stale={stale}>
+          <ChartCard
+            size="tall"
+            unit="GW"
+            title={`hold ${gw(a.by_hour[peak].p90_shortfall)} at ${pad2(a.by_hour[peak].hour)}:00`}
+            subtitle="backup that covers 9 in 10 hours, by hour (uk). the line is the flat month-wide figure: planning by hour buys less off-peak."
+            count={a.by_hour.length}
+            initial={peak}
+            readout={(i) => {
+              const h = a.by_hour[i];
+              return { key: `${pad2(h.hour)}:00 uk`, value: gw(h.p90_shortfall), label: "covers 9 in 10 hours",
+                facts: [`${gw(h.p90_shortfall - o.p90_shortfall, true)} vs flat`, `typical miss ${gw(h.mae)}`, `bias ${gw(h.bias, true)}`] };
+            }}
+            table={{ name: `backup-by-hour-${cutoff.replace(":", "")}`, head: ["hour (uk)", "backup for 90% cover (MW)", "typical miss (MW)", "bias (MW)"],
+              rows: a.by_hour.map((h) => [`${pad2(h.hour)}:00`, Math.round(h.p90_shortfall), Math.round(h.mae), Math.round(h.bias)]) }}
+          >
+            {(scrub) => (
+              <EmphasisBars data={a.by_hour} x="hour" y="p90_shortfall" emphasis={(h) => h.hour === a.by_hour[peak].hour}
+                fmtX={pad2} refLine={{ y: o.p90_shortfall, label: `flat ${gw(o.p90_shortfall)}` }} scrub={scrub} />
+            )}
+          </ChartCard>
+
+          <div className="three">
+            <ChartCard
+              size="short"
+              unit="GW"
+              title={`${a.by_level[top].level} forecasts run ${gw(a.by_level[top].bias)} high`}
+              subtitle="average over-forecast, by forecast level. growing with wind fits curtailment."
+              count={a.by_level.length}
+              initial={top}
+              readout={(i) => {
+                const l = a.by_level[i];
+                return { key: l.level, value: gw(l.bias, true), label: "over-forecast", facts: [`${l.n} hours`, `miss ${gw(l.mae)}`] };
+              }}
+              table={{ name: `bias-by-level-${cutoff.replace(":", "")}`, head: ["forecast level", "hours", "bias (MW)", "typical miss (MW)"],
+                rows: a.by_level.map((l) => [l.level, l.n, Math.round(l.bias), Math.round(l.mae)]) }}
+            >
+              {(scrub) => (
+                <EmphasisBars data={a.by_level} x="level" y="bias" emphasis={(l) => l.level === a.by_level[top].level}
+                  fmtX={(v) => String(v).replace(" GW", "")} scrub={scrub} />
+              )}
+            </ChartCard>
+
+            <ChartCard
+              size="short"
+              unit="GW"
+              title={`day-ahead lands ${Math.round(daLo)}–${Math.round(daHi)}h out`}
+              subtitle="typical miss by hours ahead. blue: your day-ahead window."
+              count={a.by_lead.length}
+              initial={Math.max(0, a.by_lead.findIndex(inWindow))}
+              readout={(i) => {
+                const l = a.by_lead[i];
+                return { key: `${l.lead} ahead`, value: gw(l.mae), label: inWindow(l) ? "miss · your window" : "typical miss",
+                  facts: [`rmse ${gw(l.rmse)}`, `bias ${gw(l.bias, true)}`, `${l.n.toLocaleString("en-GB")} forecasts`] };
+              }}
+              table={{ name: `miss-by-lead-${cutoff.replace(":", "")}`, head: ["made ahead by", "forecasts", "typical miss (MW)", "rmse (MW)", "bias (MW)"],
+                rows: a.by_lead.map((l) => [l.lead, l.n, Math.round(l.mae), Math.round(l.rmse), Math.round(l.bias)]) }}
+            >
+              {(scrub) => (
+                <EmphasisBars data={a.by_lead} x="lead" y="mae" emphasis={inWindow} fmtX={(v) => String(v).replace("h", "")} scrub={scrub} />
+              )}
+            </ChartCard>
+
+            <ChartCard
+              size="short"
+              unit="hours"
+              title={`9 in 10 hours stay under ${gw(o.p90_shortfall)} short`}
+              subtitle={
+                <span className="legend-row">
+                  <span><i className="bar-key" style={{ background: C.orange }} aria-hidden="true" />shortfall you bought</span>
+                  <span><i className="bar-key" style={{ background: C.blue }} aria-hidden="true" />spare wind</span>
+                  <span>error in GW</span>
+                </span>
+              }
+              count={hist.length}
+              initial={p90Bin}
+              readout={(i) => {
+                const b = hist[i];
+                return { key: `${gw(b.from, true)} to ${gw(b.to, true)}`, value: `${b.count}`, label: b.from >= 0 ? "hours short" : "hours of spare wind",
+                  facts: [`${Math.round(b.below * 100)}% of hours at or below`] };
+              }}
+              table={{ name: `error-histogram-${cutoff.replace(":", "")}`, head: ["error from (MW)", "error to (MW)", "hours"],
+                rows: hist.map((b) => [b.from, b.to, b.count]) }}
+            >
+              {({ sel, onMove }) => (
+                <ResponsiveContainer>
+                  <BarChart data={hist} margin={margin} accessibilityLayer={false} barCategoryGap={2}
+                    onMouseMove={onMove} onClick={onMove} onTouchMove={onMove}>
+                    <CartesianGrid stroke={C.grid} vertical={false} />
+                    <XAxis dataKey="mid" type="number" domain={[hist[0]?.from ?? 0, hist.at(-1)?.to ?? 0]} ticks={histTicks}
+                      tickFormatter={toGw} {...axisProps} />
+                    <YAxis width={32} allowDecimals={false} {...axisProps} />
+                    {pointerOnly}
+                    <ReferenceLine x={0} stroke={C.ink} strokeWidth={1} />
+                    <ReferenceLine x={o.p90_shortfall} stroke={C.axis} strokeWidth={1}
+                      label={{ value: "90%", position: "top", fill: C.axis, fontSize: 12 }} />
+                    <Bar dataKey="count" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                      {hist.map((b, i) => <Cell key={b.from} fill={b.from >= 0 ? C.orange : C.blue} {...selectedRing(i === sel)} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </ChartCard>
+          </div>
+        </div>
+      </section>
+  );
+});
 
 export default function Page() {
   const [cutoff, setCutoff] = useState(DEFAULT_CUTOFF);
@@ -246,7 +410,8 @@ export default function Page() {
   // The month comes from the data: calendar, labels and the default day all follow by_day.
   const days = a?.by_day.map((d) => d.day) ?? [];
   const date = picked ?? days[0] ?? null;
-  const day = useApi<Day>(date && `/api/day?date=${date}&cutoff=${cutoff}`);
+  const dayUrl = (iso: string) => `/api/day?date=${iso}&cutoff=${cutoff}`;
+  const day = useApi<Day>(date && dayUrl(date));
 
   const o = a?.overall;
   const month = days[0] ? calDate(days[0], { month: "long", year: "numeric" }) : "the month";
@@ -259,19 +424,12 @@ export default function Page() {
   const dayStats = day.data?.metrics;
   const points = day.data?.points ?? [];
   const published = points.find((p) => p.publishTime)?.publishTime;
+  const worstPoint = argmax(points, (p) => (p.forecast == null ? -1 : Math.abs(p.forecast - p.actual)));
   const error = acc.error ?? day.error;
   // Turbine speed: the shown day's delivered wind against the windiest day of the month (0..1).
   const windiest = Math.max(0, ...(a?.by_day.map((d) => d.actual_mean) ?? []));
   const windiness = dayStats && windiest ? dayStats.actual_mean / windiest : 0.5;
 
-  // Insight inputs, all derived from the response so titles state what this cutoff shows.
-  const peak = a?.by_hour.length ? a.by_hour.reduce((m, h) => (h.p90_shortfall > m.p90_shortfall ? h : m)) : undefined;
-  const topLevel = a?.by_level.at(-1);
-  const [daLo, daHi] = a?.day_ahead_lead_h ?? [0, 0];
-  const inWindow = (l: { lo: number; hi: number }) => l.hi > daLo && l.lo < daHi;
-  const hist = a?.histogram.map((b) => ({ ...b, mid: (b.from + b.to) / 2 })) ?? [];
-  const histTicks = hist.length ? niceTicks(hist[0].from, hist.at(-1)!.to).filter((t) => t >= hist[0].from) : [];
-  const bins = new Map(hist.map((b) => [String(b.mid), b]));
 
   return (
     <>
@@ -343,7 +501,9 @@ export default function Page() {
                   return (
                     <button key={iso} type="button" className="day" data-sev={SEV.filter((t) => s.mae >= t).length}
                       aria-pressed={iso === date} aria-label={`${calDate(iso, { day: "numeric", month: "long" })}, typical miss ${gw(s.mae)}`}
-                      onClick={() => setPicked(iso)}>
+                      onClick={() => setPicked(iso)}
+                      onPointerEnter={() => void request(dayUrl(iso)).catch(() => {})}
+                      onFocus={() => void request(dayUrl(iso)).catch(() => {})}>
                       <b>{Number(iso.slice(8))}</b>
                       <span className="num">{(s.mae / 1000).toFixed(1)}</span>
                     </button>
@@ -372,112 +532,43 @@ export default function Page() {
                   {dayStats && <span className="chip">avg wind <strong className="num">{gw(dayStats.actual_mean)}</strong></span>}
                 </span>
               }
-              head={["time (uk)", "actual (MW)", "forecast (MW)"]}
-              rows={points.map((p) => [ukTime(p.startTime), p.actual, p.forecast ?? "–"])}
+              count={points.length}
+              initial={worstPoint}
+              readout={(i) => {
+                const p = points[i];
+                return p.forecast == null
+                  ? { key: ukTime(p.startTime), value: gw(p.actual), label: "actual", facts: ["no forecast at the half hour"] }
+                  : { key: ukTime(p.startTime), value: gw(p.forecast - p.actual, true), label: p.forecast > p.actual ? "short of forecast" : "above forecast",
+                      facts: [`actual ${gw(p.actual)}`, `forecast ${gw(p.forecast)}`] };
+              }}
+              table={{ name: `day-${shownDate}-${cutoff.replace(":", "")}`, head: ["time (uk)", "actual (MW)", "forecast (MW)"],
+                rows: points.map((p) => [ukTime(p.startTime), p.actual, p.forecast ?? ""]) }}
             >
-              <ResponsiveContainer>
-                <ComposedChart data={points} margin={margin} accessibilityLayer={false}>
-                  <CartesianGrid stroke={C.grid} vertical={false} />
-                  <XAxis dataKey="startTime" tickFormatter={ukTime} minTickGap={40} {...axisProps} />
-                  <YAxis {...axisProps} width={32} tickFormatter={toGw}
-                    ticks={niceTicks(0, Math.max(0, ...points.flatMap((p) => [p.actual, p.forecast ?? 0])))} />
-                  <Tooltip cursor={{ stroke: C.axis, strokeWidth: 1 }} content={(p) => <ClayTooltip {...p} fmtLabel={ukTime} />} />
-                  <Area name="actual" dataKey="actual" stroke={C.blue} strokeWidth={2} fill={C.blue} fillOpacity={0.1} />
-                  <Line name="day-ahead forecast" dataKey="forecast" stroke={C.orange} strokeWidth={2} dot={false} connectNulls />
-                </ComposedChart>
-              </ResponsiveContainer>
+              {({ sel, onMove }) => {
+                const p = points[sel];
+                return (
+                  <ResponsiveContainer>
+                    <ComposedChart data={points} margin={margin} accessibilityLayer={false}
+                      onMouseMove={onMove} onClick={onMove} onTouchMove={onMove}>
+                      <CartesianGrid stroke={C.grid} vertical={false} />
+                      <XAxis dataKey="startTime" tickFormatter={ukTime} minTickGap={40} {...axisProps} />
+                      <YAxis {...axisProps} width={32} tickFormatter={toGw}
+                        ticks={niceTicks(0, Math.max(0, ...points.flatMap((q) => [q.actual, q.forecast ?? 0])))} />
+                      {pointerOnly}
+                      <Area dataKey="actual" stroke={C.blue} strokeWidth={2} fill={C.blue} fillOpacity={0.1} isAnimationActive={false} />
+                      <Line dataKey="forecast" stroke={C.orange} strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+                      {p && <ReferenceLine x={p.startTime} stroke={C.axis} strokeWidth={1} />}
+                      {p && <ReferenceDot x={p.startTime} y={p.actual} r={5} fill={C.blue} stroke="#fff" strokeWidth={2} />}
+                      {p?.forecast != null && <ReferenceDot x={p.startTime} y={p.forecast} r={5} fill={C.orange} stroke="#fff" strokeWidth={2} />}
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                );
+              }}
             </ChartCard>
           </div>
         </section>
 
-        {a && (
-          <section aria-labelledby="ins-h" aria-busy={acc.loading}>
-            <div className="section-head">
-              <h2 id="ins-h">what {month} taught a buyer</h2>
-              <p>error = forecast − actual. positive means the wind fell short and you bought the gap.</p>
-            </div>
-            <div className="insights" data-stale={acc.stale}>
-              {peak && o && (
-                <ChartCard
-                  size="tall"
-                  unit="GW"
-                  title={`hold ${gw(peak.p90_shortfall)} at ${pad2(peak.hour)}:00`}
-                  subtitle="backup that covers 9 in 10 hours, by hour (uk). the line is the flat month-wide figure: planning by hour buys less off-peak."
-                  head={["hour (uk)", "backup for 90% cover (MW)", "typical miss (MW)", "bias (MW)"]}
-                  rows={a.by_hour.map((h) => [`${pad2(h.hour)}:00`, Math.round(h.p90_shortfall), Math.round(h.mae), Math.round(h.bias)])}
-                >
-                  <EmphasisBars data={a.by_hour} x="hour" y="p90_shortfall" name="backup for 90% cover"
-                    emphasis={(h) => h.hour === peak.hour} fmtX={pad2} fmtLabel={(l) => `${pad2(l)}:00 uk`}
-                    refLine={{ y: o.p90_shortfall, label: `flat ${gw(o.p90_shortfall)}` }} />
-                </ChartCard>
-              )}
-
-              <div className="three">
-                {topLevel && (
-                  <ChartCard
-                    size="short"
-                    unit="GW"
-                    title={`${topLevel.level} forecasts run ${gw(topLevel.bias)} high`}
-                    subtitle="average over-forecast, by forecast level (GW). growing with wind fits curtailment."
-                    head={["forecast level", "hours", "bias (MW)", "typical miss (MW)"]}
-                    rows={a.by_level.map((l) => [l.level, l.n, Math.round(l.bias), Math.round(l.mae)])}
-                  >
-                    <EmphasisBars data={a.by_level} x="level" y="bias" name="average over-forecast"
-                      emphasis={(l) => l.level === topLevel.level} fmtX={(v) => String(v).replace(" GW", "")} />
-                  </ChartCard>
-                )}
-
-                <ChartCard
-                  size="short"
-                  unit="GW"
-                  title={`day-ahead lands ${Math.round(daLo)}–${Math.round(daHi)}h out`}
-                  subtitle="typical miss by hours ahead. blue: your day-ahead window."
-                  head={["made ahead by", "forecasts", "typical miss (MW)", "rmse (MW)", "bias (MW)"]}
-                  rows={a.by_lead.map((l) => [l.lead, l.n, Math.round(l.mae), Math.round(l.rmse), Math.round(l.bias)])}
-                >
-                  <EmphasisBars data={a.by_lead} x="lead" y="mae" name="typical miss" emphasis={inWindow}
-                    fmtX={(v) => String(v).replace("h", "")} fmtLabel={(l) => `${l} ahead`} />
-                </ChartCard>
-
-                {o && (
-                  <ChartCard
-                    size="short"
-                    unit="hours"
-                    title={`9 in 10 hours stay under ${gw(o.p90_shortfall)} short`}
-                    subtitle={
-                      <span className="legend-row">
-                        <span><i className="bar-key" style={{ background: C.orange }} aria-hidden="true" />shortfall you bought</span>
-                        <span><i className="bar-key" style={{ background: C.blue }} aria-hidden="true" />spare wind</span>
-                        <span>error in GW</span>
-                      </span>
-                    }
-                    head={["error range (MW)", "hours"]}
-                    rows={a.histogram.filter((b) => b.count).map((b) => [`${b.from.toLocaleString("en-GB")} to ${b.to.toLocaleString("en-GB")}`, b.count])}
-                  >
-                    <ResponsiveContainer>
-                      <BarChart data={hist} margin={margin} accessibilityLayer={false} barCategoryGap={2}>
-                        <CartesianGrid stroke={C.grid} vertical={false} />
-                        <XAxis dataKey="mid" type="number" domain={[hist[0]?.from ?? 0, hist.at(-1)?.to ?? 0]} ticks={histTicks}
-                          tickFormatter={toGw} {...axisProps} />
-                        <YAxis width={32} allowDecimals={false} {...axisProps} />
-                        <Tooltip cursor={{ fill: C.grid }} content={(p) => (
-                          <ClayTooltip {...p} fmtValue={(v) => `${v} hours`}
-                            fmtLabel={(l) => { const b = bins.get(l); return b ? `${gw(b.from, true)} to ${gw(b.to, true)}` : l; }} />
-                        )} />
-                        <ReferenceLine x={0} stroke={C.ink} strokeWidth={1} />
-                        <ReferenceLine x={o.p90_shortfall} stroke={C.axis} strokeWidth={1}
-                          label={{ value: "90%", position: "top", fill: C.axis, fontSize: 12 }} />
-                        <Bar name="hours" dataKey="count" radius={[4, 4, 0, 0]} activeBar={{ fillOpacity: 0.8 }}>
-                          {hist.map((b) => <Cell key={b.from} fill={b.from >= 0 ? C.orange : C.blue} />)}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </ChartCard>
-                )}
-              </div>
-            </div>
-          </section>
-        )}
+        {a && <Insights a={a} cutoff={cutoff} month={month} stale={acc.stale} loading={acc.loading} />}
       </main>
 
       <footer>
