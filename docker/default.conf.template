@@ -1,0 +1,19 @@
+# Rendered by the nginx image's envsubst step: ${API_URL} is the ethan API (e.g. http://ethan:8000).
+server {
+  listen 8080;
+  root /usr/share/nginx/html;
+
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Content-Security-Policy "frame-ancestors 'none'" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+  # Same-origin API: the browser never needs CORS.
+  location /api/ {
+    proxy_pass ${API_URL};
+  }
+
+  location / {
+    try_files $uri $uri.html $uri/ =404;
+  }
+  error_page 404 /404.html;
+}

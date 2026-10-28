@@ -57,12 +57,16 @@ function niceTicks(lo: number, hi: number): number[] {
   return ticks;
 }
 
+// Where the ethan API lives. Empty (the default) means same origin: the dev proxy, or nginx in Docker.
+// On Vercel it is the ethan deploy's URL, inlined at build time.
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
+
 // The data is a static snapshot, so a response never changes: cache the request per URL. Calendar
 // tiles prefetch on hover/focus, so a click usually finds its day already loaded.
 const responses = new Map<string, Promise<unknown>>();
 function request<T>(url: string): Promise<T> {
   if (!responses.has(url)) {
-    const p = fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`the data service returned ${r.status}.`))));
+    const p = fetch(API_BASE + url).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`the data service returned ${r.status}.`))));
     p.catch(() => responses.delete(url)); // never cache a failure
     responses.set(url, p);
   }
