@@ -1,6 +1,6 @@
 /* Apple system palette + claymorphism surfaces. Light only (color-scheme: light).
-   Text colours are the darker accessible variants (>= 4.5:1 on --bg); the bright system
-   colours are used for graphics only (>= 3:1). */
+   Text colours are the darker *-text variants (>= 4.5:1 on the surfaces); chart colours
+   (--blue, --orange, --green, --indigo) clear 3:1 on both card surfaces. page.tsx mirrors them. */
 :root {
   color-scheme: light;
   --bg: #eef0f5;
@@ -12,6 +12,8 @@
 
   --blue: #007aff;
   --blue-text: #0066cc;
+  --orange: #c96a00;
+  --green: #248a3d;
   --orange-text: #b25000;
   --green-text: #1f7a37;
   --red-text: #c4001a;
@@ -38,7 +40,9 @@
 }
 
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+/* keep keyboard focus clear of the sticky header (taller once it wraps on phones) */
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 96px; }
+@media (max-width: 640px) { html { scroll-padding-top: 150px; } }
 body {
   margin: 0;
   background: var(--bg);
@@ -200,10 +204,10 @@ section { display: grid; gap: 18px; }
 figure { margin: 0; display: grid; gap: 14px; }
 .fig-head { display: grid; gap: 4px; }
 .fig-head h3 { font-size: 20px; font-weight: 600; }
-figcaption { font-size: 15px; color: var(--secondary); }
-figcaption strong { color: var(--label); }
+.fig-note { font-size: 15px; color: var(--secondary); }
+.fig-note strong { color: var(--label); }
 .chart { inline-size: 100%; block-size: 260px; }
-[aria-busy="true"] :is(.chart, .kpis, .chips) { opacity: 0.5; transition: opacity 0.2s; }
+[data-stale="true"] { opacity: 0.5; transition: opacity 0.2s; }
 .chart.tall { block-size: 320px; }
 
 details { font-size: 14px; }
@@ -227,13 +231,14 @@ th { color: var(--secondary); font-weight: 600; position: sticky; top: 0; backgr
 .alert { border-radius: 18px; padding: 14px 18px; background: #fff0f0; color: var(--red-text); box-shadow: var(--clay-sm); }
 .skeleton { block-size: 100%; min-block-size: 140px; border-radius: 18px; background: var(--surface-lo); box-shadow: var(--clay-pressed); }
 
-footer { color: var(--secondary); font-size: 13px; display: grid; gap: 6px; }
+footer { max-width: 1120px; margin: 0 auto; padding: 0 16px 48px; color: var(--secondary); font-size: 13px; display: grid; gap: 6px; }
 footer a { color: var(--blue-text); }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
   .day:hover { transform: none; }
 }
+/* Selection is a fill, so the focus outline stays distinguishable in high-contrast mode. */
 @media (forced-colors: active) {
-  .segments label:has(input:checked), .day[aria-pressed="true"] { outline: 2px solid Highlight; }
+  .segments label:has(input:checked), .day[aria-pressed="true"], .day[aria-pressed="true"] b { background: Highlight; color: HighlightText; }
 }
