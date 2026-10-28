@@ -284,11 +284,13 @@ figure { margin: 0; display: grid; gap: 1rem; }
 
 /* Readout: the persistent "what am I looking at" strip under each chart, pressed into the clay. */
 .readout {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.875rem;
+  display: grid;
   min-block-size: 3.25rem; padding: 0.625rem 1rem; border-radius: 1.125rem;
   background: rgb(var(--shade) / 0.1); box-shadow: var(--clay-pressed);
   font-size: 0.8125rem; color: var(--secondary);
 }
+.ro-item { grid-area: 1 / 1; display: flex; flex-wrap: wrap; align-items: baseline; align-content: start; gap: 0.25rem 0.875rem; }
+.ro-item[data-on="false"] { visibility: hidden; } /* hidden also removes it from the accessibility tree */
 .ro-key { font-weight: 700; color: var(--label); }
 .ro-main strong { font: 800 1.25rem/1 var(--font-ui); color: var(--label); letter-spacing: -0.01em; }
 .ro-fact { white-space: nowrap; }

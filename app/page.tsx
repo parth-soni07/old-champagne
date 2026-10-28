@@ -140,7 +140,6 @@ function ChartCard({ title, subtitle, size = "", stale, unit, count, initial, re
     e.preventDefault();
     choose(next);
   };
-  const r = count ? readout(sel) : null;
   return (
     <figure className="clay card" data-stale={stale}>
       <div className="card-head">
@@ -161,20 +160,28 @@ function ChartCard({ title, subtitle, size = "", stale, unit, count, initial, re
           {children({ sel, onMove })}
         </div>
       </div>
+      {/* Every mark's readout sits in the same grid cell and only the selected one is visible, so
+          the strip is always as tall as the longest readout: scrubbing never resizes the card. */}
       <div className="readout" aria-live="polite" aria-atomic="true">
-        {r && (
-          <>
-            <span className="ro-key">{r.key}</span>
-            <span className="ro-main"><strong className="num">{r.value}</strong> {r.label}</span>
-            {r.facts.map((f) => <span key={f} className="ro-fact">{f}</span>)}
-          </>
-        )}
+        {Array.from({ length: count }, (_, i) => {
+          const r = readout(i);
+          return (
+            <div key={i} className="ro-item" data-on={i === sel}>
+              <span className="ro-key">{r.key}</span>
+              <span className="ro-main"><strong className="num">{r.value}</strong> {r.label}</span>
+              {r.facts.map((f) => <span key={f} className="ro-fact">{f}</span>)}
+            </div>
+          );
+        })}
       </div>
-      <table className="sr-only">
-        <caption>{title}</caption>
-        <thead><tr>{table.head.map((h) => <th key={h} scope="col">{h}</th>)}</tr></thead>
-        <tbody>{table.rows.map((row, i) => <tr key={i}>{row.map((c, j) => <td key={j}>{c}</td>)}</tr>)}</tbody>
-      </table>
+      {/* hidden via a wrapper: a table can't shrink below its content, so sr-only on it overflows */}
+      <div className="sr-only">
+        <table>
+          <caption>{title}</caption>
+          <thead><tr>{table.head.map((h) => <th key={h} scope="col">{h}</th>)}</tr></thead>
+          <tbody>{table.rows.map((row, i) => <tr key={i}>{row.map((c, j) => <td key={j}>{c}</td>)}</tr>)}</tbody>
+        </table>
+      </div>
     </figure>
   );
 }
